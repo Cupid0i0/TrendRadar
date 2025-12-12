@@ -2,49 +2,67 @@ name: Hot News Crawler
 
 on:
   schedule:
-    # 我们使用的是 github 官方提供的资源来进行的推送，而每个账号的资源是限额的，为了不被官方判定为滥用而面临封号的风险，不建议比半小时更低
-    - cron: "0 * * * *" # 每小时整点运行一次(实际有偏差) 或者 "*/30 * * * *" (每半小时执行一次) 或者 "*/30 0-14 * * *"(每天早上 8 点到晚上 10 点期间，每半小时运行一次)
-  workflow_dispatch:
+    - cron: "0 * * * *"  # 每小时执行
+  workflow_dispatch:  # 手动触发（优先用这个测试）
 
-# 添加权限设置
 permissions:
   contents: write
 
 jobs:
   crawl:
     runs-on: ubuntu-latest
+    # 开启调试日志（关键）
+    env:
+      PYTHONUNBUFFERED: "1"  # 强制Python输出实时刷新（避免日志缓存）
+      DEBUG: "1"
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
+        # 打印检出信息
+        with:
+          fetch-depth: 1
+        env:
+          ACTIONS_STEP_DEBUG: true
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.9"
+      - name: Show Python version  # 新增：验证Python环境
+        run: |
+          python --version
+          pip --version
 
       - name: Install dependencies
         run: |
+          echo "📦 开始安装依赖..."
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          # 打印已安装的包（排查依赖缺失）
+          pip list
+          echo "🔧 安装Playwright依赖..."
           playwright install --with-deps
+          # 验证Playwright安装
+          playwright --version
+        # 依赖安装失败时保留日志
+        continue-on-error: false
 
       - name: Verify required files
         run: |
           echo "🔍 检查必需的配置文件..."
-
+          # 打印目录结构（关键：确认文件路径是否正确）
+          ls -la ./
+          ls -la ./config/ || echo "⚠️ config目录不存在"
+          
           if [ ! -f config/config.yaml ]; then
             echo "❌ 错误: config/config.yaml 文件不存在"
-            echo "请参考项目文档创建配置文件"
             exit 1
           fi
-
           if [ ! -f config/frequency_words.txt ]; then
             echo "❌ 错误: config/frequency_words.txt 文件不存在"
-            echo "请参考项目文档创建频率词配置文件"
             exit 1
           fi
-
           echo "✅ 配置文件检查通过"
 
       - name: Run crawler
@@ -53,11 +71,41 @@ jobs:
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           GITHUB_ACTIONS: true
-        run: python main.py
+        run: |
+          echo "🚀 开始执行爬虫脚本..."
+          # 打印环境变量（排查秘钥是否加载，注意：敏感信息会脱敏）
+          echo "EMAIL_FROM: $EMAIL_FROM"
+          echo "EMAIL_TO: $EMAIL_TO"
+          # 执行脚本并打印详细日志
+          python -u main.py  # -u 强制无缓冲输出
+        # 脚本执行失败时不终止，继续打印日志
+        continue-on-error: true
+
+      - name: Show crawler output (debug)  # 新增：如果脚本有输出文件，打印内容
+        run: |
+          echo "📄 检查脚本输出文件..."
+          # 替换为你的输出文件路径（比如爬取结果文件）
+          ls -la ./output/ || echo "⚠️ output目录不存在"
+          cat ./output/result.txt || echo "⚠️ 输出文件不存在"
 
       - name: Commit and push if changes
         run: |
+          echo "🔗 配置Git用户信息..."
           git config --global user.name 'GitHub Actions'
           git config --global user.email 'actions@github.com'
+          # 打印Git状态（排查是否有变更）
+          git status
           git add -A
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto update by GitHub Actions at $(TZ=Asia/Shanghai date)" && git push)
+          # 打印diff（确认变更内容）
+          git diff --staged
+          # 提交并推送
+          if git diff --quiet && git diff --staged --quiet; then
+            echo "ℹ️ 无文件变更，跳过提交"
+          else
+            git commit -m "Auto update by GitHub Actions at $(TZ=Asia/Shanghai date)"
+            echo "📤 推送变更到仓库..."
+            git push
+            echo "✅ 推送成功"
+          fi
+        # 推送失败时打印错误
+        continue-on-error: false
